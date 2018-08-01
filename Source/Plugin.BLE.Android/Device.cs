@@ -61,10 +61,11 @@ namespace Plugin.BLE.Android
 
         public override object NativeDevice => BluetoothDevice;
         internal bool IsOperationRequested { get; set; }
+        internal bool IsAutoConnectRequested { get; private set; }
 
         protected override async Task<IEnumerable<IService>> GetServicesNativeAsync()
         {
-            if (_gattCallback == null || _gatt == null)
+            if (_gatt == null)
             {
                 return Enumerable.Empty<IService>();
             }
@@ -88,6 +89,7 @@ namespace Plugin.BLE.Android
         public void Connect(ConnectParameters connectParameters, CancellationToken cancellationToken)
         {
             IsOperationRequested = true;
+            IsAutoConnectRequested = connectParameters.AutoConnect;
 
             if (connectParameters.ForceBleTransport)
             {
@@ -95,9 +97,17 @@ namespace Plugin.BLE.Android
             }
             else
             {
-                var connectGatt = BluetoothDevice.ConnectGatt(Application.Context, connectParameters.AutoConnect, _gattCallback);
-                _connectCancellationTokenRegistration.Dispose();
-                _connectCancellationTokenRegistration = cancellationToken.Register(() => connectGatt.Disconnect());
+                // If gatt is null then initiate the connection process by passing application context , connection parameters
+                //and gattcallbacks.
+                if (null == _gatt)
+                {
+                    _gatt = BluetoothDevice.ConnectGatt(Application.Context, connectParameters.AutoConnect, _gattCallback);
+                }
+                //else a valid gatt object is already exist.Just call connect. DO NOT craete new Gatt object by calling ConnectGatt.
+                else
+                {
+                    _gatt.Connect();
+                }
             }
         }
 
@@ -141,6 +151,7 @@ namespace Plugin.BLE.Android
             if (_gatt != null)
             {
                 IsOperationRequested = true;
+                IsAutoConnectRequested = false; // user disconnect disables autconnect
 
                 ClearServices();
 
@@ -158,12 +169,37 @@ namespace Plugin.BLE.Android
         /// </summary>
         public void CloseGatt()
         {
-            _gatt?.Close();
-            _gatt = null;
+            if (_gatt == null)
+            {
+                Trace.Message("[Warning]: Can't close gatt after disconnect {0}. Gatt is null.", Name);
+                return;
+            }
 
-            // ClossGatt might will get called on signal loss without Disconnect being called we have to make sure we clear the services
-            // Clear services & characteristics otherwise we will get gatt operation return FALSE when connecting to the same IDevice instace at a later time
+            // ClossGatt might will get called on signal loss without Disconnect being called
+            // we have to make sure we clear the services
             ClearServices();
+
+            // signal loss will not determine the closing of our gatt instance so that autoconnect can work
+            if (!IsAutoConnectRequested)
+            {
+                _gatt.Close();
+                _gatt = null;
+            }
+
+        }
+
+        public override void Dispose()
+        {
+            if (State == DeviceState.Connected)
+            {
+                base.Dispose();
+            }
+            else
+            {
+                // make sure to close any gatt instance if still open because of auto connect
+                IsAutoConnectRequested = false;
+                CloseGatt();
+            }
         }
 
         protected override DeviceState GetState()
@@ -263,7 +299,7 @@ namespace Plugin.BLE.Android
 
         public override async Task<bool> UpdateRssiAsync()
         {
-            if (_gatt == null || _gattCallback == null)
+            if (_gatt == null)
             {
                 Trace.Message("You can't read the RSSI value for disconnected devices except on discovery on Android. Device is {0}", State);
                 return false;
@@ -297,7 +333,7 @@ namespace Plugin.BLE.Android
 
         protected override async Task<int> RequestMtuNativeAsync(int requestValue)
         {
-            if (_gatt == null || _gattCallback == null)
+            if (_gatt == null)
             {
                 Trace.Message("You can't request a MTU for disconnected devices. Device is {0}", State);
                 return -1;
@@ -336,7 +372,7 @@ namespace Plugin.BLE.Android
 
         protected override bool UpdateConnectionIntervalNative(ConnectionInterval interval)
         {
-            if (_gatt == null || _gattCallback == null)
+            if (_gatt == null)
             {
                 Trace.Message("You can't update a connection interval for disconnected devices. Device is {0}", State);
                 return false;
@@ -359,5 +395,6 @@ namespace Plugin.BLE.Android
                 throw new Exception($"Update Connection Interval fails with error. {ex.Message}");
             }
         }
+
     }
 }
